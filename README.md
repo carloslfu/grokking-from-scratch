@@ -1,96 +1,257 @@
-# Grokking from scratch — `(a + b) mod 113`
+# Grokking, from scratch
 
-Reproduction of **grokking** (delayed generalization) on modular addition,
-using a 1-layer transformer written in raw PyTorch tensors — **no
-`nn.Module`, no `nn.Linear`, no `nn.Embedding`**. Every weight is a plain
-tensor and the forward pass is explicit einsum/matmul/softmax, so the whole
-model is readable top-to-bottom.
+Train a tiny transformer on modular arithmetic and something strange happens:
+it **memorizes** the training data in 200 steps, then spends thousands of
+steps stuck at random chance on everything it hasn't seen — and then,
+abruptly, it *gets it*, jumping to ~100% accuracy on equations it was never
+trained on. OpenAI researchers named this delayed generalization
+**grokking** ([Power et al. 2022](https://arxiv.org/abs/2201.02177)).
 
-Config follows Nanda et al. 2023 ("Progress Measures for Grokking via
-Mechanistic Interpretability"); the phenomenon is from Power et al. 2022
-("Grokking: Generalization Beyond Overfitting on Small Algorithmic
-Datasets", [arXiv:2201.02177](https://arxiv.org/abs/2201.02177)).
+This repo reproduces the phenomenon end-to-end on a laptop (~8 minutes),
+then opens the network up and finds the algorithm it discovered: the model
+invents a **Fourier transform** — it places the numbers on circles and adds
+them by rotation.
 
-## Result
+The transformer is written from scratch in raw PyTorch tensors — no
+`nn.Module`, no `nn.Linear`, no `nn.Embedding`. Every weight is a plain
+tensor and the forward pass is explicit einsum/matmul/softmax, readable
+top-to-bottom in [`grok_from_scratch.py`](grok_from_scratch.py). The
+architecture and training config follow
+[Nanda et al. 2023](https://arxiv.org/abs/2301.05217), the paper that first
+reverse-engineered what grokked networks actually learn.
 
-Trained on 30% of all 113² = 12,769 equations; evaluated on the held-out 70%.
+## What is grokking?
+
+The standard mental model of overfitting says: once training accuracy hits
+100% and validation accuracy is stuck near zero, you're done — the model has
+memorized, and more training won't help. Grokking breaks that intuition.
+On small algorithmic datasets, if you keep training *far* past the point of
+overfitting (with regularization, especially weight decay), validation
+accuracy eventually snaps from chance to perfect. The network abandons its
+memorized lookup table in favor of the actual rule — long after it stopped
+having any training-loss reason to change.
+
+## The task
+
+Learn `(a + b) mod 113` from examples. There are 113² = 12,769 possible
+equations; the model trains on a random 30% (3,830) and is evaluated on the
+held-out 70% (8,939) it never sees.
+
+Each equation is three tokens. `37 + 1 = 38` becomes:
+
+```
+input   [ 37,  1, 113 ]     ← token IDs for  "37"  "1"  "="
+label     38                ← the token the model must predict at '='
+```
+
+The vocabulary is 114 symbols: the numbers 0–112 (113 residues — one per
+possible value mod 113) plus `=` as token 113. There is no `+` token; every
+sequence has the same shape, so the operation is implicit.
+
+One thing to internalize: **the numbers are opaque symbols, not numerals.**
+Token 37 is just ID #37 — the model never sees digits, never knows 38 comes
+after 37, and can't compute anything *from* the ID. It's handed 30% of the
+cells of a 113×113 answer table, like a giant Sudoku, and has to fill in
+the rest. The only way to do that better than chance is to discover the
+table's hidden structure.
+
+## The model
+
+The smallest possible GPT: one attention block and one MLP on a residual
+stream. 226,176 parameters. No LayerNorm, no biases — stripped to the
+studs, which is exactly what makes it possible to read the learned
+algorithm out of the weights later.
+
+```
+     input:  [ a ,  b ,  = ]
+                │
+                ▼
+   EMBED        resid = W_E[token] + W_pos          W_E: 114×128 lookup table
+                │                                   (one learned vector per symbol)
+                ▼
+   ATTENTION    4 heads, causal mask                the '=' position pulls in
+                resid = resid + attn(resid)         the vectors for a and b
+                │
+                ▼
+   MLP          512 ReLU neurons                    combines the a- and b-features
+                resid = resid + mlp(resid)          (this is where the math happens)
+                │
+                ▼
+   UNEMBED      logits = resid @ W_U                scores all 114 symbols;
+                │                                   highest logit at '=' wins
+                ▼
+     prediction:  (a + b) mod 113
+```
+
+Division of labor in the trained network: the **embedding** stores each
+number's representation, **attention** is mostly transport (it moves the
+`a` and `b` vectors to the `=` position, where the prediction is made), the
+**MLP** does the actual computation, and the **unembedding** reads out the
+answer.
+
+## What happens during training
+
+Full-batch AdamW — the gradient of the entire training set every step —
+with strong weight decay (1.0), for 40,000 steps.
 
 | Milestone | Step |
 |---|---|
-| Train accuracy > 99% (memorized) | **200** |
-| Val loss peak (20.7 — maximally overfit) | 1,200 |
+| Train accuracy > 99% (**memorized**) | **200** |
+| Val loss peaks at 20.7 (maximally overfit) | 1,200 |
 | Val accuracy > 50% | 3,300 |
 | Val accuracy > 99% (**grokked**) | **4,200** |
 
-The model holds 100% train / ~5% val accuracy for thousands of steps, then
-generalizes — a **21× gap** between memorization and generalization:
-
 ![learning curves](00_learning_curves.png)
 
-## The learned algorithm is a Fourier circuit
+Read the left plot: train accuracy (red) is perfect from step 200 onward.
+Validation accuracy (green) — the 8,939 equations the model has never seen —
+sits near chance (1/113 ≈ 0.9%) for **twenty times longer**, then rockets
+to ~100%. On the right, validation loss first *rises* to a huge peak
+(classic overfitting: the model grows more confidently wrong about unseen
+data) before its second descent. During that whole plateau, nothing about
+the training loss suggests anything is happening — the change is invisible
+unless you look inside.
 
-Exactly as in Nanda et al., the grokked network computes modular addition
-via a discrete Fourier transform:
+## Inside the grokked model: a Fourier circuit
 
-- **Embedding spectrum** collapses onto ~5 key frequencies — k = 33, 53,
-  34, 49 hold **87.6%** of all non-DC power (k = 22 a weaker fifth). Before
-  grokking the spectrum is flat (~2-3% per frequency).
+Why would a neural network represent numbers as waves? Because **modular
+arithmetic is rotation.** `(a + b) mod 113` is "walk `a` hours on a 113-hour
+clock, then `b` more." A clock face is a circle, and the natural coordinates
+for a point on a circle are cosine and sine. So the model learns to embed
+each number `x` as an angle:
 
-  ![embedding spectrum](01_embedding_spectrum.png)
-
-- **Numbers embed on circles**: projecting each number's embedding onto the
-  (cos, sin) directions at each key frequency traces a clean ring.
-
-  ![embedding circles](02_embedding_circles.png)
-
-- **MLP neurons are band-limited** to the same frequencies (2D-FFT
-  concentration 0.20 vs 0.08 for an ungrokked model).
-
-  ![top neurons](03_top_neurons.png)
-
-- **Trajectory**: weight norm rises → peaks (~step 300) → decays
-  (memorize → clean up, the Omnigrok signature). In the spectrum heatmap the
-  memorization "wash" dies off while the key-frequency columns survive.
-
-  ![trajectory](04_trajectory.png)
-
-## Files
-
-| File | What |
-|---|---|
-| `grok_from_scratch.py` | Model + training. Raw-tensor transformer, full-batch AdamW, saves 18 checkpoints. |
-| `analyze.py` | All analyses/plots: learning curves, embedding FFT + circles, neuron grids, attention, trajectory. |
-| `training_log.json` | Metrics every 100 steps. |
-| `00–04_*.png` | The plots above. |
-
-Not tracked: `checkpoints/` (~16 MB), `params.pt`, `train.log` (regenerable),
-and the paper PDF (get it from [arXiv](https://arxiv.org/abs/2201.02177)).
-
-## Reproduce
-
-```bash
-python3 grok_from_scratch.py       # ~8 min on Apple Silicon (MPS), M3 Pro
-python3 analyze.py --trajectory    # writes the 5 PNGs + prints report
+```
+x   →   cos(2πkx/113),  sin(2πkx/113)         for a handful of frequencies k
 ```
 
-## Setup
+The `/113` bakes the "mod" into the geometry — `x` and `x+113` land on the
+same point, wraparound for free. Addition then needs only multiplication,
+via the trig identity the MLP learns to implement:
 
-1-layer decoder-only transformer, d_model 128, 4 heads (d_head 32),
-d_mlp 512, no LayerNorm, no biases — **226,176 params**. Vocab 114
-(numbers 0–112 + `=`); sequence `[a, b, =]`, loss on the last position.
-Full-batch AdamW (batch = all 3,830 train equations), lr 1e-3, weight decay
-1.0, betas (0.9, 0.98), 40k steps, seed 0.
+```
+cos(w(a+b)) = cos(wa)·cos(wb) − sin(wa)·sin(wb)
+```
 
-Deviation from Nanda: weights init at `1/√fan_out`, which makes `W_in` ~2×
-smaller than his `1/√d_model` convention — smaller init is a known grokking
-accelerator, so this run groks at ~4k steps instead of his ~10–15k. To get
-the longer plateau, init the MLP matrices at `1/√fan_in` instead.
+and the unembedding scores each candidate answer `c` by, in effect,
+`cos(w(a+b−c))` — maximal exactly when `c = (a+b) mod 113`, i.e. when the
+rotated vector lines up with the answer's vector.
 
-## Ideas to go deeper
+Why several frequencies instead of one? A single cosine peaks at the right
+answer but falls off smoothly — near-miss answers also score well. Summing
+the score across ~5 different frequencies sharpens it into a spike:
+at the correct `c` every frequency agrees (constructive interference); at
+every wrong `c` they disagree and cancel (destructive). Same math as a
+Fourier series building a sharp peak out of smooth waves.
 
-- Implement Nanda's **restricted / excluded loss** progress measures with
-  `forward_cache` — shows the Fourier circuit forming gradually from ~step
-  1k, long before val accuracy moves.
-- Sweep weight decay (0, 0.1, 1, 3) and init scale — both shift the
-  grokking point dramatically.
-- Swap the task: subtraction, multiplication, `x² + y²` — all mod 113.
+The evidence, from this actual trained model:
+
+**The embedding spectrum is 5 spikes.** Run an FFT down the embedding table
+and four frequencies — k = 33, 53, 34, 49 — hold **87.6%** of the power
+(k = 22 is a weaker fifth). Before grokking, the same spectrum is flat.
+
+![embedding spectrum](01_embedding_spectrum.png)
+
+**The numbers sit on circles.** Project each number's embedding onto the
+(cos, sin) directions at each key frequency:
+
+![embedding circles](02_embedding_circles.png)
+
+**The MLP neurons are tuned to the same frequencies.** Evaluate each neuron
+on all 113×113 input pairs and the activation patterns are 2-D waves; their
+FFTs concentrate on the same k's (concentration 0.20 vs 0.08 for an
+ungrokked model).
+
+![top neurons](03_top_neurons.png)
+
+And why *those* frequencies? **No reason — it's a lottery.** 113 is prime,
+so every frequency is functionally identical: the map `x → kx mod 113` just
+relabels the clock positions. Each frequency starts with a tiny random
+amplitude at initialization; gradient descent amplifies whichever started
+slightly ahead, weight decay kills the rest. A different seed picks
+different winners.
+
+## How grokking happens
+
+The two solutions compete on weight efficiency:
+
+- **Memorization** needs many bespoke weights — each stores facts about
+  specific training equations, receives gradient only from those examples,
+  and generalizes to nothing.
+- **The Fourier circuit** reuses the same few directions for *every*
+  equation — constant gradient reinforcement, tiny total weight norm.
+
+Weight decay (here a strong 1.0) taxes every weight every step. Weights
+that aren't consistently earning their keep through gradients shrink and
+die. The memorization circuit — diffuse and weakly reinforced — can't pay
+the tax; the Fourier circuit can. Training first finds the fast, greedy
+memorization solution, then slowly replaces it with the efficient one:
+
+![trajectory](04_trajectory.png)
+
+Top: total weight norm rises while memorizing, peaks (~step 300), then
+decays — the cleanup. Bottom: the embedding spectrum over training. Early
+checkpoints are a diffuse wash across all frequencies (memorization
+weights); the wash then fades to black while exactly the key-frequency
+columns stay bright. You are watching the lottery being run.
+
+Nanda et al.'s deeper finding, visible in this trajectory: **grokking is
+only sudden at the output.** Inside, the Fourier circuit forms gradually
+from early in the plateau — the val-accuracy cliff is just the moment it
+finally outweighs the memorization circuit it's been hiding behind. And as
+[Liu et al.'s "Omnigrok"](https://arxiv.org/abs/2210.01117) showed, the
+plateau length is largely a weight-norm story: start with smaller weights
+(or decay harder) and the wait shrinks.
+
+## Run it yourself
+
+```bash
+python3 grok_from_scratch.py       # trains 40k steps, ~8 min on Apple Silicon (M3 Pro, MPS)
+python3 analyze.py --trajectory    # writes the 5 PNGs above + prints a numeric report
+```
+
+Watch the stdout during training: train accuracy hits 1.000 within the
+first few hundred steps while val accuracy sits below 0.1 — then somewhere
+past step 3,000, val starts moving. `analyze.py` also prints the key
+frequencies and per-head attention patterns for the final model.
+
+Requirements: Python 3, PyTorch (MPS, CUDA, or CPU), matplotlib.
+
+## Configuration
+
+| | |
+|---|---|
+| Model | 1-layer decoder-only transformer, d_model 128, 4 heads (d_head 32), d_mlp 512 |
+| | no LayerNorm, no biases — 226,176 params |
+| Data | `(a+b) mod 113`, 30% train / 70% val, seed 0 |
+| Optimizer | full-batch AdamW, lr 1e-3, weight decay 1.0, betas (0.9, 0.98), 40k steps |
+| Checkpoints | 18 log-spaced snapshots → `checkpoints/` |
+
+Deviation from Nanda's setup: weights here init at `1/√fan_out`, making
+`W_in` ~2× smaller than his `1/√d_model` convention. Smaller init is a
+known grokking accelerator, so this run groks at ~4k steps instead of his
+~10–15k. For the longer, more dramatic plateau, init the MLP matrices at
+`1/√fan_in`.
+
+Not tracked in git: `checkpoints/` (~16 MB), `params.pt`, `train.log` — all
+regenerated by training — and the Power et al. PDF
+([get it from arXiv](https://arxiv.org/abs/2201.02177)).
+
+## Going further
+
+- Implement Nanda's **restricted / excluded loss** progress measures using
+  `forward_cache()` (returns every intermediate activation) — this makes
+  the gradual circuit formation visible from ~step 1k, long before val
+  accuracy moves.
+- **Sweep weight decay** (0, 0.1, 1, 3) and init scale — both shift the
+  grokking point dramatically; wd=0 never groks.
+- **Swap the task**: subtraction, multiplication, `x² + y²` — one-line
+  change in `make_data`.
+
+## References
+
+- Power, Burda, Edwards, Babuschkin, Misra (2022).
+  [Grokking: Generalization Beyond Overfitting on Small Algorithmic Datasets](https://arxiv.org/abs/2201.02177).
+- Nanda, Chan, Lieberum, Smith, Steinhardt (2023).
+  [Progress Measures for Grokking via Mechanistic Interpretability](https://arxiv.org/abs/2301.05217).
+- Liu, Michaud, Tegmark (2022).
+  [Omnigrok: Grokking Beyond Algorithmic Data](https://arxiv.org/abs/2210.01117).
