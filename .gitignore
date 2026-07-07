@@ -1,0 +1,6 @@
+__pycache__/
+.DS_Store
+checkpoints/
+params.pt
+train.log
+grokking_2201.02177.pdf
