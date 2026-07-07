@@ -108,6 +108,16 @@ number's representation, **attention** is mostly transport (it moves the
 **MLP** does the actual computation, and the **unembedding** reads out the
 answer.
 
+(A note on the embedding: `W_E[token]` is mathematically one-hot encoding
+times a matrix — indexing just skips multiplying all the zeros. Same at the
+loss: cross-entropy against an integer label is cross-entropy against a
+one-hot target.)
+
+The causal mask is the standard GPT rule — each position may attend only to
+itself and earlier positions, so `a` sees nothing, `b` sees `a`, and `=`
+sees everything. Only the `=` position's output is used, so the mask isn't
+load-bearing here; we keep it to stay faithful to the papers' architecture.
+
 ## What happens during training
 
 Full-batch AdamW — the gradient of the entire training set every step —
@@ -199,11 +209,13 @@ The two solutions compete on weight efficiency:
 - **The Fourier circuit** reuses the same few directions for *every*
   equation — constant gradient reinforcement, tiny total weight norm.
 
-Weight decay (here a strong 1.0) taxes every weight every step. Weights
-that aren't consistently earning their keep through gradients shrink and
-die. The memorization circuit — diffuse and weakly reinforced — can't pay
-the tax; the Fourier circuit can. Training first finds the fast, greedy
-memorization solution, then slowly replaces it with the efficient one:
+Weight decay (here a strong 1.0) taxes every weight every step: with
+lr 1e-3, each weight is multiplied by 0.999 per update — a 0.1% tax, 40,000
+times — so any weight the gradients don't actively defend decays to nothing
+within a few thousand steps. The memorization circuit — diffuse and weakly
+reinforced — can't pay the tax; the Fourier circuit can. Training first
+finds the fast, greedy memorization solution, then slowly replaces it with
+the efficient one:
 
 ![trajectory](04_trajectory.png)
 
@@ -220,6 +232,46 @@ finally outweighs the memorization circuit it's been hiding behind. And as
 [Liu et al.'s "Omnigrok"](https://arxiv.org/abs/2210.01117) showed, the
 plateau length is largely a weight-norm story: start with smaller weights
 (or decay harder) and the wait shrinks.
+
+## Takeaways beyond toy models
+
+Grokking is a small, cheap demonstration of a general failure mode:
+**sudden-looking jumps are usually smooth processes measured badly.**
+Accuracy is a threshold metric — it moves last, at the moment an internal
+circuit finally wins. The continuous signals moved much earlier: in this
+run, the weight norm peaked at step ~300 and the Fourier frequencies were
+visibly strengthening by step ~1–3k, while val accuracy still sat near
+chance. If you only watch the output metric, the most interesting part of
+training is invisible.
+
+The same illusion shows up at real scale:
+
+- **"Emergent abilities" of LLMs** often look sudden because exact-match
+  accuracy is thresholded — the underlying log-likelihoods improve smoothly
+  ([Schaeffer et al. 2023](https://arxiv.org/abs/2304.15004)).
+- **Induction heads**, the circuit behind in-context learning, form in an
+  abrupt window during real LM training, visible as a bump in the loss
+  curve ([Olsson et al. 2022](https://transformer-circuits.pub/2022/in-context-learning-and-induction-heads/index.html)).
+- A smooth **aggregate loss can hide sharp per-skill transitions** that
+  average out.
+
+Practical habits this motivates when training large models:
+
+- Track **continuous precursors** (log-prob of correct answers, probe
+  accuracy), not just pass/fail evals — they make "emergence" forecastable.
+- **Slice evals per skill**; don't trust one aggregate number.
+- Keep **log-spaced checkpoints** and study trajectories, not endpoints.
+- Log the free internals — **per-layer weight norms, gradient norms** —
+  phase transitions announce themselves there first.
+- If a skill is stuck at chance, the fix is usually **more/better data,
+  not more steps**: time-to-generalize explodes as task data shrinks.
+- **Small-data finetuning is the grokking regime** (overparameterized
+  model, many epochs, weight decay) — there, "train accuracy is 100% and
+  val is flat, stop the run" can be premature.
+
+The caveat that keeps this honest: most plateaus are just plateaus. The
+lesson is not "always train longer" — it's to instrument training so that
+nothing important is invisible.
 
 ## Run it yourself
 
@@ -244,6 +296,10 @@ Requirements: Python 3, PyTorch (MPS, CUDA, or CPU), matplotlib.
 | Data | `(a+b) mod 113`, 30% train / 70% val, seed 0 |
 | Optimizer | full-batch AdamW, lr 1e-3, weight decay 1.0, betas (0.9, 0.98), 40k steps |
 | Checkpoints | 18 log-spaced snapshots → `checkpoints/` |
+
+AdamW rather than Adam is load-bearing: AdamW applies weight decay directly
+to the weights instead of folding it into the adaptively-scaled gradient,
+and the entire phenomenon runs on decay behaving exactly as configured.
 
 Deviation from Nanda's setup: weights here init at `1/√fan_out`, making
 `W_in` ~2× smaller than his `1/√d_model` convention. Smaller init is a
@@ -274,3 +330,7 @@ regenerated by training — and the Power et al. PDF
   [Progress Measures for Grokking via Mechanistic Interpretability](https://arxiv.org/abs/2301.05217).
 - Liu, Michaud, Tegmark (2022).
   [Omnigrok: Grokking Beyond Algorithmic Data](https://arxiv.org/abs/2210.01117).
+- Olsson et al. (2022).
+  [In-context Learning and Induction Heads](https://transformer-circuits.pub/2022/in-context-learning-and-induction-heads/index.html).
+- Schaeffer, Miranda, Koyejo (2023).
+  [Are Emergent Abilities of Large Language Models a Mirage?](https://arxiv.org/abs/2304.15004)
