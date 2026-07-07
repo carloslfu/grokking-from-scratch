@@ -31,6 +31,25 @@ accuracy eventually snaps from chance to perfect. The network abandons its
 memorized lookup table in favor of the actual rule — long after it stopped
 having any training-loss reason to change.
 
+## Why does it happen? — the short answer
+
+Two solutions compete inside the network. **Memorization** is easy to find,
+so gradient descent finds it first — but it's expensive: storing 3,830
+arbitrary facts takes many weights, each reinforced by only a few examples.
+**The real rule** is hard to find but cheap to run: a few reused weights
+handle every equation. Weight decay taxes all weights all the time, and
+that tax decides the race — the memorized weights can't pay it, the reused
+ones can. So while training loss sits at zero, the general circuit quietly
+grows and the memorized one decays away.
+
+And the suddenness is an illusion. Open the model up (as this repo does)
+and the transition is **gradual inside**: the rule-circuit forms steadily
+through the plateau; validation accuracy only snaps upward at the moment
+that circuit finally outweighs the memorization it was hiding behind. We
+know this because the circuit is directly visible in the weights while
+val accuracy still sits at chance — see
+[How grokking happens](#how-grokking-happens) below for the plots.
+
 ## The task
 
 Learn `(a + b) mod 113` from examples. There are 113² = 12,769 possible
