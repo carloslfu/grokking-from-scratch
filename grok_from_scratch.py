@@ -16,10 +16,10 @@ Mechanistic Interpretability":
   - full-batch AdamW, lr=1e-3, wd=1.0, betas=(0.9, 0.98)
   - 40k steps, 30% training fraction, no LayerNorm
 
-Expected dynamics:
-  step  <  1k :  train acc → 100%, val acc still ~1/113 ≈ 0.9% (chance)
-  step  ~10k :  val acc starts climbing (circuit formation visible)
-  step  ~25k :  val acc → 100% (grokked)
+Expected dynamics (this init groks earlier than Nanda's — see README):
+  step  ~200 :  train acc → 100%, val acc still ~1/113 ≈ 0.9% (chance)
+  step  ~3k  :  val acc starts climbing (circuit formation visible)
+  step  ~4k  :  val acc → 100% (grokked)
 
 Run:
   python3 grok_from_scratch.py
