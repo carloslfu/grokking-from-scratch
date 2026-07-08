@@ -189,8 +189,10 @@ def plot_embedding_circles(p, freqs, save_to="02_embedding_circles.png"):
 # Analysis 3: MLP neuron activation grids
 #
 # Evaluate every MLP neuron on every (a, b) pair and reshape to (P, P).
-# Neurons implementing the algorithm look like 2D sinusoids in (a + b) —
-# diagonal stripes — and their 2D FFT concentrates at (±k, ±k).
+# In the grokked model each neuron is a single-frequency 2D wave: a plaid
+# pattern ~ ReLU(cos-wave in a + cos-wave in b) at one key frequency k, so
+# its 2D FFT peaks at (±k, 0) / (0, ±k), with the product terms the readout
+# uses appearing at (±k, ±k). An ungrokked model's grids are unstructured.
 # -----------------------------------------------------------------------------
 def neuron_activation_grids(p):
     """(D_MLP, P, P) activations at the '=' position, on CPU."""
@@ -246,8 +248,8 @@ def plot_top_neurons(p, save_to="03_top_neurons.png", n_show=6):
         axes[1, i].set_xticks([]); axes[1, i].set_yticks([])
 
     fig.suptitle(
-        "Top MLP neurons by FFT concentration — grokked = diagonal stripes, "
-        "peak at (k, k)", y=1.02,
+        "Top MLP neurons by FFT concentration — grokked = single-frequency "
+        "2D waves", y=1.02,
     )
     plt.tight_layout()
     plt.savefig(save_to, dpi=130, bbox_inches="tight")
@@ -255,6 +257,17 @@ def plot_top_neurons(p, save_to="03_top_neurons.png", n_show=6):
     print(f"  saved {save_to}")
     print(f"  concentration of top-{n_show} neurons: "
           + ", ".join(f"{conc[t]:.2f}" for t in top))
+
+    # Population statistic: which frequency does each of the 512 neurons
+    # peak at? In the grokked model, every one lands in the key set.
+    counts = {}
+    for i in range(grids.shape[0]):
+        ka, kb = peak_frequency(grids[i])
+        k = max(abs(ka), abs(kb))
+        counts[k] = counts.get(k, 0) + 1
+    dist = ", ".join(f"k={k}: {n}" for k, n in
+                     sorted(counts.items(), key=lambda kv: -kv[1])[:8])
+    print(f"  peak frequency across all {grids.shape[0]} neurons: {dist}")
 
 
 # -----------------------------------------------------------------------------

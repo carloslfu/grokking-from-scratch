@@ -96,10 +96,11 @@ def make_data(seed):
 # -----------------------------------------------------------------------------
 # Parameters
 #
-# Every weight is a plain tensor with requires_grad=True. Default init is
-# Kaiming-ish: std = 1 / sqrt(fan_in) where fan_in is the last dim. Smaller
-# init helps grokking (less unlearning of large weights), but we stay near
-# default to match Nanda's setup faithfully.
+# Every weight is a plain tensor with requires_grad=True, initialized
+# N(0, 1/fan_out) — std = 1/sqrt(shape[-1]), the output dimension. This is
+# a deliberate deviation from Nanda's 1/sqrt(d_model)-everywhere convention,
+# and it groks ~2x earlier (step ~4.2k vs ~9.1k; measured — see README and
+# variants.py's nanda-init run).
 # -----------------------------------------------------------------------------
 def param(*shape, std=None):
     if std is None:

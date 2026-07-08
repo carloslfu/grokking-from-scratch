@@ -1,10 +1,9 @@
 # Grokking, from scratch
 
 Train a tiny transformer on modular arithmetic and something strange happens:
-it **memorizes** the training data in 200 steps, then spends thousands of
-steps stuck at random chance on everything it hasn't seen — and then,
-abruptly, it *gets it*, jumping to ~100% accuracy on equations it was never
-trained on. OpenAI researchers named this delayed generalization
+it **memorizes** the training data in 200 steps, then for thousands more
+keeps failing the equations it hasn't seen — until, abruptly, it *gets it*,
+snapping to ~100% accuracy on equations it was never trained on. OpenAI researchers named this delayed generalization
 **grokking** ([Power et al. 2022](https://arxiv.org/abs/2201.02177)).
 
 This repo reproduces the phenomenon end-to-end on a laptop (~8 minutes),
@@ -47,7 +46,7 @@ and the transition is **gradual inside**: the rule-circuit forms steadily
 through the plateau; validation accuracy only snaps upward at the moment
 that circuit finally outweighs the memorization it was hiding behind. We
 know this because the circuit is directly visible in the weights while
-val accuracy still sits at chance — see
+val accuracy still sits in single digits — see
 [How grokking happens](#how-grokking-happens) below for the plots.
 
 ## The task
@@ -76,7 +75,7 @@ table's hidden structure.
 
 ## The model
 
-The smallest possible GPT: one attention block and one MLP on a residual
+A minimal GPT: one attention block and one MLP on a residual
 stream. 226,176 parameters. No LayerNorm, no biases — stripped to the
 studs, which is exactly what makes it possible to read the learned
 algorithm out of the weights later.
@@ -103,10 +102,10 @@ algorithm out of the weights later.
 ```
 
 Division of labor in the trained network: the **embedding** stores each
-number's representation, **attention** is mostly transport (it moves the
-`a` and `b` vectors to the `=` position, where the prediction is made), the
-**MLP** does the actual computation, and the **unembedding** reads out the
-answer.
+number's representation, **attention** is almost pure transport — measured
+on the trained model, 99.9% of the `=` position's attention mass lands on
+`a` and `b`, split 50/50 by every head — the **MLP** does the actual
+computation, and the **unembedding** reads out the answer.
 
 (A note on the embedding: `W_E[token]` is mathematically one-hot encoding
 times a matrix — indexing just skips multiplying all the zeros. Same at the
@@ -134,8 +133,10 @@ with strong weight decay (1.0), for 40,000 steps.
 
 Read the left plot: train accuracy (red) is perfect from step 200 onward.
 Validation accuracy (green) — the 8,939 equations the model has never seen —
-sits near chance (1/113 ≈ 0.9%) for **twenty times longer**, then rockets
-to ~100%. On the right, validation loss first *rises* to a huge peak
+starts at chance (1/113 ≈ 0.9%), is still below 10% at step 1,000, and only
+crosses 50% at step 3,300 — then leaps to 99% within the next 900 steps.
+Memorizing took 200 steps; generalizing took 4,200 — **twenty-one times
+longer**. On the right, validation loss first *rises* to a huge peak
 (classic overfitting: the model grows more confidently wrong about unseen
 data) before its second descent. During that whole plateau, nothing about
 the training loss suggests anything is happening — the change is invisible
@@ -175,8 +176,10 @@ Fourier series building a sharp peak out of smooth waves.
 The evidence, from this actual trained model:
 
 **The embedding spectrum is 5 spikes.** Run an FFT down the embedding table
-and four frequencies — k = 33, 53, 34, 49 — hold **87.6%** of the power
-(k = 22 is a weaker fifth). Before grokking, the same spectrum is flat.
+and four of the 56 possible frequencies — k = 33, 53, 34, 49 — hold
+**87.6%** of the power (k = 22 is a weaker fifth). At initialization the
+same spectrum is flat; the spikes grow through the plateau (tracked
+step-by-step in [When is the algorithm chosen?](#when-is-the-algorithm-chosen)).
 
 ![embedding spectrum](01_embedding_spectrum.png)
 
@@ -185,10 +188,14 @@ and four frequencies — k = 33, 53, 34, 49 — hold **87.6%** of the power
 
 ![embedding circles](02_embedding_circles.png)
 
-**The MLP neurons are tuned to the same frequencies.** Evaluate each neuron
-on all 113×113 input pairs and the activation patterns are 2-D waves; their
-FFTs concentrate on the same k's (concentration 0.20 vs 0.08 for an
-ungrokked model).
+**All 512 MLP neurons are tuned to the key frequencies.** Evaluate each
+neuron on all 113×113 input pairs and its activation grid is a
+single-frequency 2-D wave — the plaid patterns below, one wave in `a` and
+one in `b` at the same k (true for 512 of 512 neurons). Classify every
+neuron by the peak of its 2-D FFT: 147 land on k = 33, 101 on 49, 97 on 53,
+95 on 34, 72 on 22 — **the entire layer, with not one neuron doing anything
+else.** (Sharpness: the top neurons put 0.20 of their FFT power in a single
+bin, vs 0.07 for the same model just after memorization.)
 
 ![top neurons](03_top_neurons.png)
 
@@ -237,22 +244,32 @@ Where does the gradient actually *go* during the plateau? Mostly nowhere:
 [Prieto et al. 2025](https://arxiv.org/abs/2501.04697) showed that once the
 training set is memorized, the gradient aligns with the direction that just
 scales the logits up — same predictions, lower loss, nothing learned. That
-is measurable in this run: through the plateau, the cosine between the full
-gradient and the weight vector reaches −0.8 — about 80% of the gradient is
-"make the logits bigger," and weight decay is the counterforce that keeps
-pulling the scaling back.
+is measurable in this run: the cosine between the full gradient and the
+weight vector builds to −0.79 by step 1k and −0.82 by step 3k (recomputed
+from the checkpoints in `verify.py`) — by mid-plateau, ~80% of the gradient
+is "make the logits bigger," and weight decay is the counterforce that
+keeps pulling the scaling back.
 
-Remove the counterforce and the scaling runs into
-float32 itself: rerun this code with wd = 0 and by step ~34k *every*
-training sample's softmax has rounded to exactly 1.0, per-sample losses sit
-at exactly 0.0, gradients from those samples vanish, and val accuracy stays
-at ~9% forever — their "Softmax Collapse." The causal flip side: keep
-wd = 0 but delete the scaling component instead (project each weight's
-gradient orthogonal to the weight — their ⊥Grad), and this same model
-generalizes by step ~1,200 with *no regularization at all* — and still
-lands on a Fourier circuit (91% of embedding power in 5 frequencies). So
-the rule-circuit isn't inherently slow to build; much of the wait is the
-optimizer spending its gradient budget on logit scaling instead.
+Remove the counterforce and the scaling runs into float32 itself: rerun
+this code with wd = 0 (`python3 variants.py wd0`) and the weight norm
+climbs unchecked (50 → 96) until softmax probabilities on training samples
+round to exactly 1.0 — half of them by step ~2k, then in a jittery
+sawtooth of saturation and brief escape, all 3,830 at step ~29k. A
+saturated sample's loss is exactly 0.0 in float32, so it sends back *no
+gradient at all*; learning starves, and val accuracy hovers near 10% for
+the whole 40k steps, never grokking — their "Softmax Collapse."
+
+The causal flip side: keep wd = 0 but delete the
+scaling component instead (project each weight's gradient orthogonal to
+the weight — their ⊥Grad, `python3 variants.py orthograd`), and this same
+model generalizes by step ~1,100 with *no regularization at all* — and
+still lands on a Fourier circuit: 92% of embedding power in 5 frequencies,
+three of them shared with the decay run's winners and two new (the
+lottery, drawn differently). Its endgame is noisier — val hovers at
+98–100% with occasional instability dips instead of pinning 1.000 — but
+the circuit holds. So the rule-circuit isn't inherently slow to build;
+much of the wait is the optimizer spending its gradient budget on logit
+scaling instead.
 
 Put together, weight decay is doing two separable jobs here. **Selection**:
 the per-step tax that memorization's weights can't pay but the reused
@@ -267,10 +284,11 @@ its way.
 
 The two anti-scaling styles also differ mechanically: decay *counteracts*
 the scaling after the gradient has already spent its budget on it — the
-−0.8 alignment persists all through the plateau — while ⊥Grad deletes it
-up front and re-spends that budget on learning. That's why it generalizes
-~3× sooner than the decay-driven grok, and why its weight norm never
-shrinks (it drifts 50 → 82 across training, vs 62 → 37 under decay). Two
+−0.8 alignment holds from step ~1k all the way to the grok — while ⊥Grad
+deletes it up front and re-spends that budget on learning. That's why it
+generalizes ~4× sooner than the decay-driven grok (step ~1.1k vs 4.2k),
+and why its weight norm never shrinks (it drifts 50 → 83 across training,
+vs rise-then-fall 50 → 62 → 37 under decay). Two
 scope notes keep this honest: "weight direction = pure logit scaling" is
 exact only for homogeneous models — bias-free, LayerNorm-free, i.e.
 exactly this one — and none of it dominates ordinary LLM pretraining,
@@ -285,7 +303,7 @@ hold, and how did they rank among all 56 frequencies?
 
 | Step | Winners' power share | Winners' ranks (of 56) | Train acc | Val acc |
 |---|---|---|---|---|
-| 0 (init) | 9.1% (= baseline) | 22, 8, 16, 41, 31 | 0.8% | 0.9% |
+| 0 (init) | 9.1% (≈ baseline) | 22, 8, 16, 41, 31 | 0.8% | 0.9% |
 | **100** | 12.1% | **1, 2, 4, 3, 7** | 80% | 2.6% |
 | 300 | 14.5% | 1, 2, 3, 4, 6 | 100% | 5.5% |
 | 1,000 | 19.0% | 1, 3, 2, 4, 5 | 100% | 9.3% |
@@ -297,7 +315,7 @@ hold, and how did they rank among all 56 frequencies?
 Two findings, both sharper than the folklore:
 
 1. **The winners are *not* chosen at initialization.** At step 0 they rank
-   8th–41st with exactly baseline power share — statistically invisible.
+   8th–41st, holding ≈ baseline power share — statistically invisible.
    The tempting story "gradient descent amplifies the frequencies that
    started ahead at init" is not what happens here.
 2. **They are chosen by step 100 — *during* memorization, not after it.**
@@ -336,7 +354,9 @@ The same illusion shows up at real scale:
   ([Schaeffer et al. 2023](https://arxiv.org/abs/2304.15004)).
 - **Induction heads**, the circuit behind in-context learning, form in an
   abrupt window during real LM training, visible as a bump in the loss
-  curve ([Olsson et al. 2022](https://transformer-circuits.pub/2022/in-context-learning-and-induction-heads/index.html)).
+  curve ([Olsson et al. 2022](https://transformer-circuits.pub/2022/in-context-learning-and-induction-heads/index.html))
+  — reproduced from scratch, same philosophy as here, in the companion repo
+  [induction-heads-from-scratch](https://github.com/carloslfu/induction-heads-from-scratch).
 - A smooth **aggregate loss can hide sharp per-skill transitions** that
   average out.
 
@@ -363,12 +383,22 @@ nothing important is invisible.
 ```bash
 python3 grok_from_scratch.py       # trains 40k steps, ~8 min on Apple Silicon (M3 Pro, MPS)
 python3 analyze.py --trajectory    # writes the 6 PNGs above + prints a numeric report
+python3 verify.py                  # re-checks every number in this README against the artifacts
+python3 variants.py all            # the wd=0, ⊥Grad, and Nanda-init side runs (~25 min)
 ```
 
 Watch the stdout during training: train accuracy hits 1.000 within the
-first few hundred steps while val accuracy sits below 0.1 — then somewhere
-past step 3,000, val starts moving. `analyze.py` also prints the key
-frequencies and per-head attention patterns for the final model.
+first few hundred steps while val crawls — 0.09 at step 1k, 0.15 at 2k,
+0.35 at 3k — then jumps: 0.97 by step 4k, 1.00 by 5k. `analyze.py` prints
+the key frequencies and per-head attention patterns for the final model.
+
+Every quantitative claim in this README is checked by
+[`verify.py`](verify.py) against the raw artifacts — the committed
+training logs plus the params/checkpoints your own run regenerates. (This
+run: Apple-silicon MPS, PyTorch 2.x, seed 0. On a different backend the
+init draw differs, so the *specific* winning frequencies and milestone
+steps will differ — that's the lottery; the committed logs and the
+structural checks still verify.)
 
 Requirements: Python 3, PyTorch (MPS, CUDA, or CPU), matplotlib.
 
@@ -386,14 +416,21 @@ AdamW rather than Adam is load-bearing: AdamW applies weight decay directly
 to the weights instead of folding it into the adaptively-scaled gradient,
 and the entire phenomenon runs on decay behaving exactly as configured.
 
-Deviation from Nanda's setup: weights here init at `1/√fan_out`, making
-`W_in` ~2× smaller than his `1/√d_model` convention. Smaller init is a
-known grokking accelerator, so this run groks at ~4k steps instead of his
-~10–15k. For the longer, more dramatic plateau, init the MLP matrices at
-`1/√fan_in`.
+One deviation from Nanda's setup, and it matters: weights here init at
+`1/√fan_out` instead of his `1/√d_model` everywhere — which makes `W_in`
+2× smaller and the attention projections 2× larger. The effect is
+measured, not assumed: `python3 variants.py nanda-init` runs the identical
+code with his convention, and it groks at step ~9,100 instead of ~4,200
+(at step 4,200 it is still at 8% val) — consistent with the ~10k his paper
+reports. Notably this is *not* a smaller-init story: our init has the
+**larger** total weight norm (50 vs 42) yet groks 2.2× sooner. What
+matters is how the scale is distributed across the matrices, not the
+overall amount.
 
-Not tracked in git: `checkpoints/` (~16 MB), `params.pt`, `train.log` — all
-regenerated by training — and the Power et al. PDF
+Committed: the training logs (`training_log*.json`), so every
+learning-curve claim is checkable without retraining. Not tracked:
+`checkpoints/` (~16 MB), `params*.pt`, `*.log` — all regenerated by the
+commands above — and the Power et al. PDF
 ([get it from arXiv](https://arxiv.org/abs/2201.02177)).
 
 ## Going further
@@ -403,13 +440,14 @@ regenerated by training — and the Power et al. PDF
   the gradual circuit formation visible from ~step 1k, long before val
   accuracy moves.
 - **Sweep weight decay** (0, 0.1, 1, 3) and init scale — both shift the
-  grokking point dramatically; wd=0 never groks (it freezes in Softmax
-  Collapse — see [How grokking happens](#how-grokking-happens)).
-- **Implement ⊥Grad** — "orthogonal gradient" (Prieto et al. 2025): before
-  each optimizer step, replace every weight's gradient `g` with
-  `g − (w·g / w·w)·w` — its component perpendicular to the weight itself —
-  rescaled back to `g`'s original norm (~10 lines). With wd=0 this model
-  generalizes by step ~1,200 — the plateau all but disappears.
+  grokking point dramatically. The extremes are already runnable:
+  [`variants.py`](variants.py) has wd=0 (starves in Softmax Collapse) and
+  ⊥Grad (the plateau all but disappears — and its ~10-line implementation,
+  `orthogonalize_grads_`, is a good read).
+- **Implement StableMax** — the other fix from Prieto et al. 2025: swap
+  softmax's exponential for a function that grows linearly, so
+  probabilities can't saturate to exactly 1.0 — and grokking again needs
+  no weight decay.
 - **Swap the task**: subtraction, multiplication, `x² + y²` — one-line
   change in `make_data`.
 
@@ -425,6 +463,8 @@ regenerated by training — and the Power et al. PDF
   [Grokking at the Edge of Numerical Stability](https://arxiv.org/abs/2501.04697).
   ICLR 2025.
 - Olsson et al. (2022).
-  [In-context Learning and Induction Heads](https://transformer-circuits.pub/2022/in-context-learning-and-induction-heads/index.html).
+  [In-context Learning and Induction Heads](https://transformer-circuits.pub/2022/in-context-learning-and-induction-heads/index.html)
+  — the companion phenomenon, reproduced in
+  [induction-heads-from-scratch](https://github.com/carloslfu/induction-heads-from-scratch).
 - Schaeffer, Miranda, Koyejo (2023).
   [Are Emergent Abilities of Large Language Models a Mirage?](https://arxiv.org/abs/2304.15004)

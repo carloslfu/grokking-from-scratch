@@ -2,5 +2,7 @@ __pycache__/
 .DS_Store
 checkpoints/
 params.pt
+params_*.pt
 train.log
+variants.log
 grokking_2201.02177.pdf
