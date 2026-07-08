@@ -194,10 +194,10 @@ ungrokked model).
 
 And why *those* frequencies? **No reason — it's a lottery.** 113 is prime,
 so every frequency is functionally identical: the map `x → kx mod 113` just
-relabels the clock positions. Each frequency starts with a tiny random
-amplitude at initialization; gradient descent amplifies whichever started
-slightly ahead, weight decay kills the rest. A different seed picks
-different winners.
+relabels the clock positions. A different seed picks different winners.
+When the lottery is *drawn* is more subtle than "at initialization" — we
+measured it, and the answer is below in
+[When is the algorithm chosen?](#when-is-the-algorithm-chosen)
 
 ## How grokking happens
 
@@ -277,6 +277,47 @@ exactly this one — and none of it dominates ordinary LLM pretraining,
 where one epoch over near-endless data means the training set is never
 memorized to begin with.
 
+## When is the algorithm chosen?
+
+Take the 5 frequencies that dominate the *final* model and track them
+backwards through the checkpoints: what share of spectrum power did they
+hold, and how did they rank among all 56 frequencies?
+
+| Step | Winners' power share | Winners' ranks (of 56) | Train acc | Val acc |
+|---|---|---|---|---|
+| 0 (init) | 9.1% (= baseline) | 22, 8, 16, 41, 31 | 0.8% | 0.9% |
+| **100** | 12.1% | **1, 2, 4, 3, 7** | 80% | 2.6% |
+| 300 | 14.5% | 1, 2, 3, 4, 6 | 100% | 5.5% |
+| 1,000 | 19.0% | 1, 3, 2, 4, 5 | 100% | 9.3% |
+| 5,000 | 76.9% | 1, 3, 2, 4, 5 | 100% | 100% |
+| 40,000 | 94.8% | 1, 2, 3, 4, 5 | 100% | 100% |
+
+![algorithm selection](05_algorithm_selection.png)
+
+Two findings, both sharper than the folklore:
+
+1. **The winners are *not* chosen at initialization.** At step 0 they rank
+   8th–41st with exactly baseline power share — statistically invisible.
+   The tempting story "gradient descent amplifies the frequencies that
+   started ahead at init" is not what happens here.
+2. **They are chosen by step 100 — *during* memorization, not after it.**
+   While train accuracy is still climbing to 80%, all five eventual
+   winners jump into the top 7 and never leave. Memorization and
+   algorithm-seeding are simultaneous processes, not sequential phases.
+   Everything after step ~300 is amplification (share 15% → 95%) and
+   cleanup — the identity of the final algorithm never changes again for
+   39,700 steps.
+
+The general lesson: **the visible transition is never the decision — it's
+the announcement.** The val-accuracy jump at step 4,200 announces a choice
+that was settled around step 100, forty times earlier. And the "choice"
+itself is symmetry breaking, nothing mystical: all 56 frequencies are
+mathematically equivalent, so the winner had to come from somewhere
+arbitrary — microscopic initialization noise, amplified by early training
+dynamics into an irreversible commitment, like a pencil balanced on its
+tip falling in *some* direction. (Reproduce with
+`python3 analyze.py --trajectory`.)
+
 ## Takeaways beyond toy models
 
 Grokking is a small, cheap demonstration of a general failure mode:
@@ -321,7 +362,7 @@ nothing important is invisible.
 
 ```bash
 python3 grok_from_scratch.py       # trains 40k steps, ~8 min on Apple Silicon (M3 Pro, MPS)
-python3 analyze.py --trajectory    # writes the 5 PNGs above + prints a numeric report
+python3 analyze.py --trajectory    # writes the 6 PNGs above + prints a numeric report
 ```
 
 Watch the stdout during training: train accuracy hits 1.000 within the

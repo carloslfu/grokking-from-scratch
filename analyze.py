@@ -326,6 +326,66 @@ def plot_trajectory(save_to="04_trajectory.png"):
 
 
 # -----------------------------------------------------------------------------
+# Analysis 6: When is the algorithm chosen?
+#
+# Take the 5 frequencies that dominate the FINAL model, then walk backwards
+# through the checkpoints asking: when did they become special? Two measures
+# per checkpoint: their share of total spectrum power (baseline for any 5 of
+# 56 frequencies: 5/56 ≈ 8.9%) and their ranks among all 56 frequencies.
+# -----------------------------------------------------------------------------
+def plot_algorithm_selection(save_to="05_algorithm_selection.png"):
+    ckpts = list_checkpoints()
+    if not ckpts:
+        print("  (no checkpoints — re-run grok_from_scratch.py to capture them)")
+        return
+
+    p_final = load_params(ckpts[-1][1], device="cpu")
+    power_f = embedding_power_spectrum(p_final)[1:]        # freqs 1..56
+    winners = (power_f.topk(5).indices + 1).tolist()
+    print(f"  final-model winning frequencies: {winners}")
+
+    steps, shares, ranks = [], [], []
+    for step, path in ckpts:
+        p = load_params(path, device="cpu")
+        power = embedding_power_spectrum(p)[1:]
+        share = sum(power[w - 1] for w in winners) / power.sum()
+        order = power.argsort(descending=True).tolist()
+        rk = [order.index(w - 1) + 1 for w in winners]
+        steps.append(step)
+        shares.append(share.item())
+        ranks.append(rk)
+        print(f"    step {step:6d} | share {share.item():.3f} | ranks {rk}")
+
+    xs = [max(s, 1) for s in steps]                        # step 0 → x=1 (log axis)
+    fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+
+    axes[0].plot(xs, shares, "o-", color="#dc2626")
+    axes[0].axhline(5 / 56, color="gray", ls="--", lw=1,
+                    label="baseline: any 5 of 56 freqs (8.9%)")
+    axes[0].set_xscale("log")
+    axes[0].set_ylabel("winners' share of spectrum power")
+    axes[0].set_title("The final algorithm's 5 frequencies, tracked backwards "
+                      "through training")
+    axes[0].legend()
+    axes[0].grid(alpha=0.3)
+
+    for i, w in enumerate(winners):
+        axes[1].plot(xs, [r[i] for r in ranks], "o-", label=f"k = {w}")
+    axes[1].set_xscale("log")
+    axes[1].set_yscale("log")
+    axes[1].invert_yaxis()                                 # rank 1 on top
+    axes[1].set_ylabel("rank among 56 frequencies")
+    axes[1].set_xlabel("optimization step (checkpoints; step 0 shown at x=1)")
+    axes[1].legend(fontsize=8)
+    axes[1].grid(alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(save_to, dpi=130)
+    plt.close()
+    print(f"  saved {save_to}")
+
+
+# -----------------------------------------------------------------------------
 # Driver
 # -----------------------------------------------------------------------------
 def main():
@@ -352,6 +412,9 @@ def main():
     if args.trajectory:
         print("\nBuilding trajectory plots from checkpoints/ ...")
         plot_trajectory()
+
+        print("\nWhen is the algorithm chosen?")
+        plot_algorithm_selection()
 
 
 if __name__ == "__main__":
