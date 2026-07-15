@@ -378,6 +378,31 @@ The caveat that keeps this honest: most plateaus are just plateaus. The
 lesson is not "always train longer" — it's to instrument training so that
 nothing important is invisible.
 
+## Same story as induction heads — a different opponent
+
+The companion repo, [induction-heads-from-scratch](https://github.com/carloslfu/induction-heads-from-scratch),
+catches the same event in a different costume: a sudden capability jump
+that is really a cooperative circuit finishing its assembly — there, a
+writer–reader pair of attention heads for in-context copying; here, the
+Fourier circuit. Both are sudden only at the output; inside, the build is
+visible long before (here, the winning frequencies are settled during
+memorization, forty times before the val-accuracy jump).
+
+The difference is the opponent. Here, memorization squats on the loss
+first, and the whole drama is the eviction: weight decay taxes the
+squatter until the circuit outweighs it — remove the tax (wd = 0) and the
+eviction never comes. In the induction sandbox the field is empty: fresh
+random data leaves the algorithm as the only earner, so it forms directly
+— grokking with the opponent deleted, no train/val gap at all. And on
+real text at laptop scale, that repo measures the third case: an opponent
+that is *legitimately better* (plain statistics out-earn copying), where
+no referee can help — only different data can.
+
+One line: grokking is an algorithm evicting a squatter; the induction
+bump is an algorithm moving into an empty house; and when the incumbent
+honestly earns its keep, the algorithm needs better terrain, not a
+better tax.
+
 ## Run it yourself
 
 ```bash
